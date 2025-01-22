@@ -8,6 +8,6 @@ go install -v github.com/0xAFz/ipx@latest
 ```
 #### Run
 ```bash
-# Usage: ipx <METHOD> <CIDR> <HOST_HEADER>
-ipx GET 1.1.1.1/32 example.com
+# Usage: ipx <CIDR> <DOMAIN>
+ipx 192.168.1.0/24 example.com
 ```
