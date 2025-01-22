@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -12,39 +13,42 @@ import (
 )
 
 const (
-	Reset   = "\033[0m"
-	Red     = "\033[31m"
-	Green   = "\033[32m"
-	Yellow  = "\033[33m"
-	Blue    = "\033[34m"
-	Magenta = "\033[35m"
-	Cyan    = "\033[36m"
-	White   = "\033[37m"
+	delta = 100
 )
 
+var proxyContentLength int
+
 func main() {
-	if len(os.Args) != 4 {
-		fmt.Println("Usage: ipx <METHOD> <CIDR> <HOST_HEADER>")
+	if len(os.Args) != 3 {
+		fmt.Println("Usage: ipx <CIDR> <DOMAIN>")
+		fmt.Println("Exmaple: ipx 192.168.1.0/24 example.com")
 		os.Exit(1)
 	}
 
-	method := os.Args[1]
-	cidr := os.Args[2]
-	hostHeader := os.Args[3]
+	cidr := os.Args[1]
+	domain := os.Args[2]
 
 	ip, ipnet, err := net.ParseCIDR(cidr)
-
 	if err != nil {
-		fmt.Println("Error: ", err)
+		fmt.Println("Failed to parse CIDR: ", err)
 		os.Exit(1)
 	}
+
+	body, err := sendHTTPRequest(domain, "https", domain)
+	if err != nil {
+		fmt.Printf("Failed to resolve origin: %v\n", err)
+		os.Exit(1)
+	}
+
+	proxyContentLength = len(body)
+
+	// fmt.Printf("Reverse Proxy Content-Length: %d\n\n", proxyContentLength)
 
 	var wg sync.WaitGroup
 
 	for ip := ip.Mask(ipnet.Mask); ipnet.Contains(ip); inc(ip) {
 		wg.Add(1)
-		//go sendHTTPRequest(ip.String(), "http", hostHeader, method, &wg)
-		go sendHTTPRequest(ip.String(), "https", hostHeader, method, &wg)
+		go worker(ip.String(), "http", domain, &wg)
 	}
 
 	wg.Wait()
@@ -59,41 +63,51 @@ func inc(ip net.IP) {
 	}
 }
 
-func sendHTTPRequest(host string, scheme string, hostHeader string, method string, wg *sync.WaitGroup) {
+func worker(host, scheme, domain string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
+	body, err := sendHTTPRequest(host, scheme, domain)
+	if err != nil {
+		return
+	}
+
+	if !isWithinRange(len(body), proxyContentLength) {
+		return
+	}
+
+	fmt.Printf("%s %d\n", host, len(body))
+}
+
+func sendHTTPRequest(host, scheme, domain string) ([]byte, error) {
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // Skip SSL verification
 		},
 	}
 
-	req, err := http.NewRequest(method, scheme+"://"+host, nil)
+	url := fmt.Sprintf("%s://%s", scheme, host)
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		fmt.Println("Error: ", err)
-		return
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Host = hostHeader
+	req.Host = domain
+
 	resp, err := client.Do(req)
-
 	if err != nil {
-		// fmt.Println("Error: ", err)
-		return
+		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			fmt.Println("Error reading response body:", err)
-			return
-		}
 
-		contentLength := len(body)
-
-		fmt.Printf(Yellow+"%s "+Reset+Cyan+"%s "+Reset+Green+"[%d] "+Reset+Magenta+"[%d] "+Reset+"%s\n", host, hostHeader, resp.StatusCode, contentLength, scheme)
-		//fmt.Printf("Origin: %s Host: %s Status-Code: %d Content-Length: %d Protocol: %s\n", host, hostHeader, resp.StatusCode, contentLength, scheme)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
+
+	return io.ReadAll(resp.Body)
+}
+
+func isWithinRange(directLength, proxyLength int) bool {
+	return math.Abs(float64(directLength)-float64(proxyLength)) <= float64(delta)
 }
