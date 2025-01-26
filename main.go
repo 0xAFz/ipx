@@ -10,48 +10,60 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
-const (
-	delta = 100
+var (
+	cidr               string
+	domain             string
+	delta              int
+	proxyContentLength int
 )
-
-var proxyContentLength int
 
 func main() {
-	if len(os.Args) != 3 {
-		fmt.Println("Usage: ipx <CIDR> <DOMAIN>")
-		fmt.Println("Exmaple: ipx 192.168.1.0/24 example.com")
-		os.Exit(1)
-	}
-
-	cidr := os.Args[1]
-	domain := os.Args[2]
-
-	ip, ipnet, err := net.ParseCIDR(cidr)
+	err := rootCmd.Execute()
 	if err != nil {
-		fmt.Println("Failed to parse CIDR: ", err)
 		os.Exit(1)
 	}
+}
 
-	body, err := sendHTTPRequest(domain, "https", domain)
-	if err != nil {
-		fmt.Printf("Failed to resolve origin: %v\n", err)
-		os.Exit(1)
-	}
+var rootCmd = &cobra.Command{
+	Use:   "ipx",
+	Short: "Origin IP Discovery Tool",
+	Run: func(cmd *cobra.Command, args []string) {
+		ip, ipnet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			fmt.Println("Failed to parse CIDR: ", err)
+			os.Exit(1)
+		}
 
-	proxyContentLength = len(body)
+		body, err := sendHTTPRequest(domain, "https", domain)
+		if err != nil {
+			fmt.Printf("Failed to resolve origin: %v\n", err)
+			os.Exit(1)
+		}
 
-	// fmt.Printf("Reverse Proxy Content-Length: %d\n\n", proxyContentLength)
+		proxyContentLength = len(body)
 
-	var wg sync.WaitGroup
+		var wg sync.WaitGroup
 
-	for ip := ip.Mask(ipnet.Mask); ipnet.Contains(ip); inc(ip) {
-		wg.Add(1)
-		go worker(ip.String(), "http", domain, &wg)
-	}
+		for ip := ip.Mask(ipnet.Mask); ipnet.Contains(ip); inc(ip) {
+			wg.Add(1)
+			go worker(ip.String(), "http", domain, &wg)
+		}
 
-	wg.Wait()
+		wg.Wait()
+	},
+}
+
+func init() {
+	rootCmd.Flags().StringVar(&cidr, "cidr", "", "CIDR range to scan for IPs (e.g., 192.168.1.0/24)")
+	rootCmd.Flags().StringVar(&domain, "domain", "", "Domain name to use in the Host header")
+	rootCmd.Flags().IntVar(&delta, "delta", 0, "Allowed range for content length difference (default 0)")
+
+	rootCmd.MarkFlagRequired("cidr")
+	rootCmd.MarkFlagRequired("domain")
 }
 
 func inc(ip net.IP) {
